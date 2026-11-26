@@ -117,3 +117,89 @@ Pour les routes authentifiées : `Authorization: Bearer <token>`. Les rôles vie
 Les tests JUnit utilisent H2 en mode MySQL, avec une base isolée par scénario. Ils couvrent la sécurité des mots de passe, les sessions, le verrouillage, la récupération, la concurrence et les endpoints HTTP. Ils ne remplacent pas une recette sur le serveur MySQL réel. Les captures et vérifications graphiques personnelles restent hors des dépôts.
 
 Références : [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [OWASP Forgot Password](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html).
+
+## Administration locale MySQL (Windows)
+
+Ces commandes sont destinees a MySQL 8, avec une base deja initialisee. Les migrations et l'initialisation sont executees avec un compte administrateur ; le serveur d'authentification utilise un compte distinct. Aucun mot de passe dans Git.
+
+### Compte d'execution dedie
+
+Dans un terminal interactif, preparer le profil administrateur (saisir le mot de passe MySQL de `root`) :
+
+```powershell
+.\scripts\database-admin.cmd -Action configure
+.\scripts\database-admin.cmd -Action provision
+```
+
+La deuxieme commande demande un **nouveau** mot de passe pour `smartbank_app`. Elle cree uniquement `'smartbank_app'@'localhost'` et refuse de remplacer un compte existant. Si une erreur survient apres sa creation, inspecter ses droits avant toute reprise : les instructions GRANT ne forment pas une transaction atomique.
+
+| Table | Droits du compte d'execution |
+| --- | --- |
+| customers | SELECT |
+| users | SELECT, UPDATE |
+| auth_sessions, password_resets | SELECT, INSERT, UPDATE, DELETE |
+| auth_events | INSERT |
+
+Pas de droits sur les autres bases, ni de CREATE, DROP, ALTER, GRANT ou CREATE USER. Ce perimetre couvre l'API d'authentification actuelle ; les futurs services bancaires devront definir leurs propres besoins. Le role fonctionnel CUSTOMER/ADMIN d'un utilisateur SmartBanking est distinct du compte technique MySQL.
+
+Configurer ensuite le terminal qui lance le backend :
+
+```powershell
+$env:SMARTBANK_DB_USER = 'smartbank_app'
+$secret = Read-Host 'Mot de passe MySQL de smartbank_app' -AsSecureString
+$env:SMARTBANK_DB_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
+$secret.Dispose()
+$env:SMARTBANK_DB_URL = 'jdbc:mysql://127.0.0.1:3306/bankdirect?serverTimezone=UTC&connectTimeout=5000&socketTimeout=10000'
+.\scripts\run-backend.cmd -Action check
+.\scripts\run-backend.cmd -LocalRecovery
+```
+
+Ne pas executer `migrate` ou `init-demo` avec ce compte limite. Le profil `mysql_config_editor` sert aux outils d'administration, pas a JDBC. Il est stocke dans le profil Windows hors du depot ; son obscurcissement n'est pas un coffre-fort chiffre.
+
+### Inspection, sauvegarde et restauration de test
+
+```powershell
+.\scripts\database-admin.cmd -Action inspect
+.\scripts\database-admin.cmd -Action backup
+```
+
+Les sauvegardes SQL et leur manifeste SHA-256 sont dans `%LOCALAPPDATA%\SmartBankingJ\backups`, avec acces Windows limite a l'utilisateur courant et SYSTEM. Le script refuse un dossier sous SmartBankingJ. Ne pas copier ces fichiers dans Git ou les livrables partages : ils contiennent les donnees et les empreintes de mots de passe. Les fichiers ne sont pas chiffres ; pour une copie externe, utiliser un stockage chiffre et definir une politique de conservation avec l'equipe.
+
+La sauvegarde utilise `--single-transaction` pour les tables InnoDB. Ne pas lancer de migration ni de DDL pendant son execution. Vues, routines, triggers et evenements sont refuses plutot qu'omis silencieusement. Il s'agit d'une sauvegarde logique de la base applicative, pas des comptes MySQL ni d'une restauration a un instant precis.
+
+Utiliser le chemin SQL affiche par la sauvegarde :
+
+```powershell
+.\scripts\database-admin.cmd -Action restore -BackupFile 'C:\chemin\bankdirect-....sql' -TargetDatabase bankdirect_restore_recette
+```
+
+La cible doit etre une **nouvelle** base commencant par `bankdirect_restore_`. Une cible existante est refusee ; `bankdirect` n'est jamais ecrasee. Le manifeste doit correspondre au fichier. Importer uniquement une sauvegarde locale de confiance : une empreinte garantit l'integrite, pas l'origine du SQL. Apres import, les tables sont controlees et les sessions/codes de recuperation supprimes pour empecher leur reactivation. En cas d'echec, la base de test partielle est conservee pour diagnostic.
+
+Dans Workbench, comparer les comptes, utilisateurs et operations avec la source, puis verifier les relations. Supprimer la base de recette manuellement lorsqu'elle n'est plus necessaire. Le script ne purge aucune sauvegarde automatiquement.
+
+Parametres optionnels : `-Database`, `-MySqlBin`, `-Port`, `-BackupDirectory` et `-LoginPath`. Pour inspecter avec un compte limite, configurer un autre profil avec `-LoginPath smartbank-runtime -LoginUser smartbank_app`, puis utiliser ce profil avec `inspect`.
+
+### Recette automatique sur MySQL
+
+Les memes 18 scenarios peuvent utiliser MySQL au lieu de H2. Dans un terminal de test, avec un compte autorise a creer/supprimer des bases :
+
+```powershell
+$env:SMARTBANK_MYSQL_TEST_SERVER = 'jdbc:mysql://127.0.0.1:3306/'
+$env:SMARTBANK_MYSQL_TEST_USER = 'root'
+$secret = Read-Host 'Mot de passe MySQL administrateur pour les tests' -AsSecureString
+$env:SMARTBANK_MYSQL_TEST_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
+$secret.Dispose()
+.\scripts\run-backend.cmd -Action test
+Remove-Item Env:SMARTBANK_MYSQL_TEST_SERVER, Env:SMARTBANK_MYSQL_TEST_USER, Env:SMARTBANK_MYSQL_TEST_PASSWORD
+```
+
+Une base `smartbank_test_<uuid>` est creee par scenario, puis supprimee. Seul un serveur local sans nom de base dans l'URL est accepte. Aucun SHUTDOWN n'est envoye a MySQL. En cas d'arret brutal, des bases temporaires peuvent rester ; verifier leur nom avant de les nettoyer. Ces tests de service n'evaluent pas a eux seuls les droits du compte `smartbank_app` : valider aussi la connexion, le changement de mot de passe, la recuperation et la deconnexion avec le backend lance sous ce compte.
+
+### Reste a valider avec l'equipe
+
+- Recette visuelle sur la base locale et compte MySQL limite.
+- Frequence de sauvegarde, duree de conservation et stockage externe chiffre.
+- Procedure metier de creation/desactivation des utilisateurs et interfaces associees.
+- Fournisseur d'e-mail/SMS si la recuperation reelle est requise ; la boite locale reste une simulation.
+
+References : [MySQL mysqldump](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html), [privileges MySQL](https://dev.mysql.com/doc/refman/8.0/en/privileges-provided.html).

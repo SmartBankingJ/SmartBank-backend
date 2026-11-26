@@ -19,6 +19,7 @@ class AuthServiceTest {
     static final PasswordHasher HASHER=new PasswordHasher();
     static final String HASH=HASHER.hash(PASSWORD);
     String url;
+    String mysqlServer, mysqlSchema, databaseUser="sa", databasePassword="";
     MutableClock clock;
     AuthService service;
     AtomicReference<String> delivered;
@@ -29,9 +30,20 @@ class AuthServiceTest {
         public Instant instant(){return now;}
         void advance(Duration time){now=now.plus(time);}
     }
-    Connection open() throws SQLException{return DriverManager.getConnection(url,"sa","");}
+    Connection open() throws SQLException{return DriverManager.getConnection(url,databaseUser,databasePassword);}
     @BeforeEach void setup() throws Exception {
-        url="jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000";
+        mysqlServer=System.getenv("SMARTBANK_MYSQL_TEST_SERVER");
+        if(mysqlServer!=null && !mysqlServer.isBlank()) {
+            if(!mysqlServer.matches("jdbc:mysql://(127\\.0\\.0\\.1|localhost):[0-9]{1,5}/"))
+                throw new IllegalArgumentException("SMARTBANK_MYSQL_TEST_SERVER must be a local server URL ending in / without a database or parameters");
+            databaseUser=Objects.requireNonNull(System.getenv("SMARTBANK_MYSQL_TEST_USER"),"SMARTBANK_MYSQL_TEST_USER required");
+            databasePassword=System.getenv().getOrDefault("SMARTBANK_MYSQL_TEST_PASSWORD", "");
+            mysqlSchema="smartbank_test_"+UUID.randomUUID().toString().replace("-", "");
+            try(Connection c=DriverManager.getConnection(mysqlServer,databaseUser,databasePassword);Statement s=c.createStatement()) {
+                s.execute("CREATE DATABASE "+mysqlSchema+" CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            }
+            url=mysqlServer+mysqlSchema+"?connectTimeout=5000&socketTimeout=20000&serverTimezone=UTC";
+        } else url="jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000";
         clock=new MutableClock();delivered=new AtomicReference<>();
         try(Connection c=open();Statement s=c.createStatement()) {
             s.execute("CREATE TABLE customers(id BIGINT PRIMARY KEY,first_name VARCHAR(80),last_name VARCHAR(80))");
@@ -42,7 +54,14 @@ class AuthServiceTest {
         }
         service=new AuthService(this::open,HASHER,clock,(id,code)->delivered.set(code));
     }
-    @AfterEach void closeDatabase() throws Exception {try(Connection c=open();Statement s=c.createStatement()){s.execute("SHUTDOWN");}}
+    @AfterEach void closeDatabase() throws Exception {
+        if(mysqlSchema!=null) {
+            // Only the randomly generated schema owned by this test is removed; never the configured application database.
+            try(Connection c=DriverManager.getConnection(mysqlServer,databaseUser,databasePassword);Statement s=c.createStatement()) {
+                s.execute("DROP DATABASE "+mysqlSchema);
+            }
+        } else if(url!=null)try(Connection c=open();Statement s=c.createStatement()){s.execute("SHUTDOWN");}
+    }
     AuthFailure failure(RunnableSql action) {return assertThrows(AuthFailure.class,action::run);}
     @FunctionalInterface interface RunnableSql {void run() throws Exception;}
     void sql(String sql) throws Exception {try(Connection c=open();Statement s=c.createStatement()){s.execute(sql);}}
