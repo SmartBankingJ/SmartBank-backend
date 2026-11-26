@@ -5,10 +5,9 @@ INSERT INTO customers (id, first_name, last_name, cin, email, phone, address)
 VALUES (1, 'Karim', 'Alami', 'BE123456', 'karim.alami@email.ma', '0661001122', 'Casablanca, Bd d''Anfa')
 ON DUPLICATE KEY UPDATE id=id;
 
--- User login: user "karim" / password "123456" (en clair ou hash simulé pour l'instant)
-INSERT INTO users (id, username, password_hash, role, status, customer_id)
-VALUES (1, 'karim', '123456', 'CUSTOMER', 'ACTIVE', 1)
-ON DUPLICATE KEY UPDATE id=id;
+-- Authentication user is created explicitly by DatabaseSetup --init-demo.
+-- Its temporary password comes from SMARTBANK_DEMO_PASSWORD and is hashed in Java.
+-- Never insert a plaintext password into password_hash.
 
 -- 2 Comptes pour Karim (Compte Chèque + Épargne)
 INSERT INTO accounts (id, customer_id, rib, type, currency, balance, status, opened_at)
