@@ -22,10 +22,14 @@ public final class AppConfig {
     }
 
     public static String get(String key) {
-        return PROPERTIES.getProperty(key);
+        String override = System.getProperty("smartbank." + key);
+        if (override != null) return override;
+        String environment = System.getenv("SMARTBANK_" + key.toUpperCase(java.util.Locale.ROOT).replace('.', '_'));
+        return environment != null ? environment : PROPERTIES.getProperty(key);
     }
 
     public static String getOrDefault(String key, String defaultValue) {
-        return PROPERTIES.getProperty(key, defaultValue);
+        String value = get(key);
+        return value == null ? defaultValue : value;
     }
 }
