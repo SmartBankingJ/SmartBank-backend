@@ -75,7 +75,7 @@ Lancer ensuite le serveur (terminal à laisser ouvert) :
 .\scripts\run-backend.cmd -LocalRecovery
 ```
 
-Avec `-LocalRecovery`, les codes sont écrits dans `%LOCALAPPDATA%\SmartBankingJ\recovery-outbox\user-<id>.txt`, hors des dépôts. Il s’agit d’une boîte locale pour le développeur, sans envoi d’e-mail/SMS. Sans ce mode ou `SMARTBANK_RECOVERY_OUTBOX`, la récupération répond explicitement qu’elle est indisponible. Ne pas activer cette simulation dans un déploiement réel.
+Avec `-LocalRecovery`, les codes sont écrits dans `%LOCALAPPDATA%\SmartBankingJ\recovery-outbox\user-<id>.txt`, hors des dépôts. Il s’agit d’une boîte locale pour le développeur, sans envoi d’e-mail/SMS. Pour l’envoi réel, configurer SMTP et utiliser `-EmailRecovery` selon la section dédiée ci-dessous. Sans canal configuré, la récupération est indisponible. Ne pas activer la simulation locale dans un déploiement réel.
 
 Le lanceur utilise le JDK et les JAR locaux si `SMARTBANK_AUTH_LIBS` désigne un dossier de dépendances, ou si le dossier local préparé `%LOCALAPPDATA%\SmartBankingJ\tools\auth-libs` existe. Sinon il utilise Maven. Les JAR n’entrent pas dans Git. Avec Maven seul : `mvn compile exec:java`.
 
@@ -200,6 +200,96 @@ Une base `smartbank_test_<uuid>` est creee par scenario, puis supprimee. Seul un
 - Recette visuelle sur la base locale et compte MySQL limite.
 - Frequence de sauvegarde, duree de conservation et stockage externe chiffre.
 - Procedure metier de creation/desactivation des utilisateurs et interfaces associees.
-- Fournisseur d'e-mail/SMS si la recuperation reelle est requise ; la boite locale reste une simulation.
+- Configuration et recette du fournisseur SMTP choisi ; le SMS reste hors du perimetre actuel.
 
 References : [MySQL mysqldump](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html), [privileges MySQL](https://dev.mysql.com/doc/refman/8.0/en/privileges-provided.html).
+
+## Recuperation par e-mail SMTP
+
+Le backend envoie le code avec Eclipse Angus / Jakarta Mail 2.0.5. Le destinataire provient uniquement de `customers.email`, associe a `users.customer_id`. L'API n'accepte pas d'adresse dans la demande et ne retourne jamais l'adresse au frontend. L'administrateur doit renseigner et confirmer cette adresse par une procedure de confiance ; aucune verification automatique de propriete de l'adresse n'est ajoutee ici.
+
+### Configuration locale
+
+Dans le terminal du backend, conserver les variables MySQL du compte `smartbank_app`, puis renseigner les valeurs du prestataire SMTP :
+
+```powershell
+$env:SMARTBANK_SMTP_HOST = 'smtp.votre-fournisseur.example'
+$env:SMARTBANK_SMTP_PORT = '587'
+$env:SMARTBANK_SMTP_SECURITY = 'starttls'
+$env:SMARTBANK_SMTP_USER = 'identifiant-fourni-par-le-prestataire'
+$env:SMARTBANK_SMTP_FROM = 'expediteur-autorise@votre-domaine.example'
+$secret = Read-Host 'Mot de passe SMTP ou mot de passe application' -AsSecureString
+$env:SMARTBANK_SMTP_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
+$secret.Dispose()
+.\scripts\run-backend.cmd -EmailRecovery
+```
+
+Remplacer les exemples par les valeurs reelles. Le prestataire peut imposer un mot de passe d'application, un expediteur valide et une configuration DNS. Ne jamais mettre ces secrets dans Git, dans le chat ou dans `app.properties`. Redemarrer le backend apres modification et arreter l'ancien serveur sur 8081.
+
+Modes : `starttls` (habituellement 587, TLS obligatoire avant authentification) ou `tls` (TLS des la connexion, habituellement 465). Les certificats et le nom du serveur sont verifies. Les serveurs exigeant uniquement OAuth2 necessitent une integration supplementaire ou un relais compatible utilisateur/mot de passe.
+
+`-EmailRecovery` force le mode SMTP meme si une ancienne outbox est configuree. `-LocalRecovery` force le mode fichier ; les deux options sont incompatibles. Sans option, `SMARTBANK_RECOVERY_MODE` accepte `smtp`, `local`, `disabled` ; en son absence l'ancienne configuration d'outbox reste compatible. Aucun repli automatique du SMTP vers un fichier.
+
+Hors Maven, ajouter a `auth-libs` (ou `-Libraries`) : `jakarta.mail-2.0.5.jar`, `jakarta.activation-api-2.1.3.jar`, `angus-activation-2.0.3.jar`. Maven telecharge les dependances du POM. Les JAR restent hors Git.
+
+### Adresse du compte de demonstration
+
+L'adresse du seed est fictive. Dans MySQL avec un compte administrateur :
+
+```sql
+SELECT u.username, c.id, c.email
+FROM users u JOIN customers c ON c.id = u.customer_id
+WHERE u.username = 'karim';
+```
+
+Renseigner une adresse reelle **que vous controlez**, en remplacant l'exemple :
+
+```sql
+UPDATE customers c JOIN users u ON u.customer_id = c.id
+SET c.email = 'votre-adresse-de-test@example.com'
+WHERE u.username = 'karim';
+```
+
+Ne pas modifier le seed partage avec une adresse personnelle. `smartbank_app` ne peut pas modifier `customers` ; cette operation reste administrative.
+
+### Recette et limites
+
+1. Lancer le backend avec `-EmailRecovery` et le frontend a jour.
+2. Demander la recuperation du compte de test. L'interface indique le mode e-mail ; consulter aussi les spams.
+3. Copier le code dans l'application, choisir et confirmer un nouveau mot de passe.
+4. Verifier le refus de l'ancien mot de passe et du code deja utilise, puis la connexion avec le nouveau mot de passe.
+5. Une nouvelle demande apres au moins une minute remplace le code. Sa duree reste de 15 minutes.
+
+HTTP 200 conserve un message neutre pour un compte inconnu, inactif ou sans adresse valide. Le champ `delivery` vaut `email` ou `local` selon la configuration globale, sans reveler l'existence d'un compte. Une erreur SMTP renvoie une indisponibilite generique et annule la transaction : le precedent code reste valable si son remplacement echoue. L'acceptation par le relais SMTP ne garantit pas l'arrivee en boite de reception.
+
+L'envoi est synchrone avec delais SMTP bornes et conserve le verrou utilisateur pendant l'envoi. Pour un volume important ou un deploiement distribue, prevoir une file transactionnelle et une supervision. Une panne entre acceptation SMTP et commit SQL peut produire un code inutilisable : refaire une demande. Ne pas journaliser codes, corps de message ou erreurs brutes du prestataire.
+
+Les tests n'envoient aucun e-mail externe : serveur SMTP factice local, MIME et destinataire, refus de repli STARTTLS en clair, injections d'en-tete, erreurs SMTP et conservation du precedent code. Le mode `local_test` est exclusivement reserve aux serveurs SMTP de test sur loopback, sans identifiants ; il est refuse a distance.
+
+Diagnostic dans le terminal backend apres un echec : `Recovery delivery failed: SMTP_AUTHENTICATION` (identifiant/mot de passe d'application refuse), `SMTP_TLS` (negociation/certificat), `SMTP_CONNECTION` (reseau/delai), `SMTP_REJECTED` (message ou destinataire refuse), `SMTP_OTHER` ou `LOCAL_IO`. Seule cette categorie est journalisee, sans erreur brute du fournisseur, adresse, mot de passe ou code. Le message public reste generique. Si aucun echec ni nouvel evenement n'apparait, verifier l'identifiant exact (tout changement de nom de connexion en base doit etre repercute dans le formulaire).
+
+### Exemple Gmail et validation du 27 novembre 2026
+
+Pour Gmail : `SMARTBANK_SMTP_HOST=smtp.gmail.com`, `SMARTBANK_SMTP_PORT=587`, `SMARTBANK_SMTP_SECURITY=starttls`. `SMARTBANK_SMTP_USER` est l'adresse Gmail complete et `SMARTBANK_SMTP_FROM` doit correspondre a cet expediteur autorise.
+
+Activer la validation en deux etapes du compte Google, puis generer un **mot de passe d'application** pour SmartBanking. Le saisir dans `Read-Host` lorsque le terminal le demande, jamais dans le texte de l'invite ni dans une commande partagee. Utiliser ce mot de passe pour le meme compte que `SMARTBANK_SMTP_USER`, pas le mot de passe Gmail habituel. Certains comptes Google n'autorisent pas les mots de passe d'application.
+
+```powershell
+$env:SMARTBANK_SMTP_HOST = 'smtp.gmail.com'
+$env:SMARTBANK_SMTP_PORT = '587'
+$env:SMARTBANK_SMTP_SECURITY = 'starttls'
+$env:SMARTBANK_SMTP_USER = (Read-Host 'Adresse Gmail expeditrice').Trim()
+$env:SMARTBANK_SMTP_FROM = $env:SMARTBANK_SMTP_USER
+$secret = Read-Host 'Mot de passe application Google' -AsSecureString
+$env:SMARTBANK_SMTP_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password.Replace(' ', '').Trim()
+$secret.Dispose()
+.\scripts\run-backend.cmd -EmailRecovery
+```
+
+Les variables SMTP et MySQL doivent etre configurees dans le **meme terminal** que le lancement du backend. Apres un changement de secret, arreter le serveur avec Ctrl+C puis le relancer. En cas de `SMTP_AUTHENTICATION`, verifier le compte expéditeur et regenerer un mot de passe d'application si necessaire. Revoquer tout secret accidentellement partage.
+
+Validation : la reception reelle via Gmail a ete confirmee par l'utilisateur le 27 novembre 2026, apres correction des identifiants SMTP et configuration de l'adresse du client. Cette confirmation ne remplace pas la recette complete des etapes de reinitialisation ci-dessus. Les adresses personnelles, secrets et codes de cette recette restent hors du depot. Les tests automatiques SMTP utilisent uniquement un serveur factice local ; l'ecran de recuperation a aussi ete verifie en mode e-mail.
+
+Sources : [parametres SMTP Gmail](https://developers.google.com/workspace/gmail/imap/imap-smtp), [mots de passe d'application Google](https://support.google.com/accounts/answer/185833).
+
+Reference : [configuration SMTP Eclipse Angus](https://eclipse-ee4j.github.io/angus-mail/docs/api/org.eclipse.angus.mail/org/eclipse/angus/mail/smtp/package-summary.html).

@@ -86,6 +86,8 @@ public final class AuthService {
         });
     }
 
+    public String recoveryChannel() { return delivery == null ? "disabled" : delivery.channel(); }
+
     /** Always returns the same public response for unknown, blocked or throttled users. */
     public void requestReset(String username) throws SQLException {
         if(delivery==null)throw new AuthFailure(503,"RECOVERY_UNAVAILABLE","La récupération des accès n’est pas disponible pour le moment.");
@@ -94,13 +96,19 @@ public final class AuthService {
         transaction(c -> {
             UserRow user=repo.byUsername(c,username.trim());
             if(user==null || !"ACTIVE".equals(user.status()))return null;
+            RecoveryDelivery.Recipient recipient=new RecoveryDelivery.Recipient(user.id(),user.email());
+            if(!delivery.accepts(recipient))return null;
             Instant now=clock.instant();
             ResetRow previous=repo.resetForUser(c,user.id());
             if(previous!=null && now.isBefore(previous.createdAt().plusSeconds(60)))return null;
             String token=PasswordHasher.token();
             repo.deleteResets(c,user.id());repo.addReset(c,user.id(),PasswordHasher.digest(token),now,now.plus(Duration.ofMinutes(15)));
-            try { delivery.deliver(user.id(),token); }
-            catch(java.io.IOException e){throw new AuthFailure(503,"RECOVERY_UNAVAILABLE","La récupération des accès n’est pas disponible pour le moment.");}
+            try { delivery.deliver(recipient,token); }
+            catch(java.io.IOException e){
+                String reason=e instanceof SmtpRecoveryDelivery.DeliveryException smtp?"SMTP_"+smtp.kind().name():"LOCAL_IO";
+                System.getLogger(AuthService.class.getName()).log(System.Logger.Level.WARNING,"Recovery delivery failed: "+reason);
+                throw new AuthFailure(503,"RECOVERY_UNAVAILABLE","La récupération des accès n’est pas disponible pour le moment.");
+            }
             repo.audit(c,user.id(),"PASSWORD_RESET_REQUESTED",now);
             return null;
         });

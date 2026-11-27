@@ -50,7 +50,7 @@ public final class AuthServer implements AutoCloseable {
                 case "POST /auth/change-password" -> {JsonObject b=body(exchange);response=service.changePassword(bearer(exchange),text(b,"currentPassword"),text(b,"newPassword"));}
                 case "POST /auth/forgot-password" -> {
                     JsonObject b=body(exchange);service.requestReset(text(b,"username"));
-                    response=Map.of("message","Si un compte correspond, des instructions de récupération seront transmises.");
+                    response=Map.of("message","Si un compte correspond, des instructions de récupération seront transmises.","delivery",service.recoveryChannel());
                 }
                 case "POST /auth/reset-password" -> {
                     JsonObject b=body(exchange);service.resetPassword(text(b,"code"),text(b,"newPassword"));
@@ -114,11 +114,16 @@ public final class AuthServer implements AutoCloseable {
     public static void main(String[] args) throws Exception {
         RecoveryDelivery delivery=null;
         String outbox=AppConfig.get("recovery.outbox");
-        if(outbox!=null && !outbox.isBlank()) {
+        String mode=AppConfig.getOrDefault("recovery.mode",outbox!=null && !outbox.isBlank()?"local":"disabled");
+        if("smtp".equals(mode)) {
+            delivery=ma.bankdirect.auth.SmtpRecoveryDelivery.fromConfig();
+            System.out.println("Recovery delivery: SMTP (email).");
+        } else if("local".equals(mode)) {
+            if(outbox==null || outbox.isBlank())throw new IllegalArgumentException("SMARTBANK_RECOVERY_OUTBOX required for local recovery");
             Path directory=Path.of(outbox).toAbsolutePath();
             delivery=RecoveryDelivery.localOutbox(directory);
             System.out.println("Development recovery simulation enabled: "+directory);
-        }
+        } else if(!"disabled".equals(mode))throw new IllegalArgumentException("SMARTBANK_RECOVERY_MODE must be smtp, local or disabled");
         AuthService service=new AuthService(Database::getConnection,new PasswordHasher(),Clock.systemUTC(),delivery);
         AuthServer api=new AuthServer(service,Integer.parseInt(AppConfig.getOrDefault("api.port","8081")));
         Runtime.getRuntime().addShutdownHook(new Thread(api::close));api.start();
