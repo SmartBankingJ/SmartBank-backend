@@ -46,8 +46,8 @@ class AuthServiceTest {
         } else url="jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000";
         clock=new MutableClock();delivered=new AtomicReference<>();
         try(Connection c=open();Statement s=c.createStatement()) {
-            s.execute("CREATE TABLE customers(id BIGINT PRIMARY KEY,first_name VARCHAR(80),last_name VARCHAR(80))");
-            s.execute("INSERT INTO customers VALUES (1,'Karim','Alami')");
+            s.execute("CREATE TABLE customers(id BIGINT PRIMARY KEY,first_name VARCHAR(80),last_name VARCHAR(80),email VARCHAR(120))");
+            s.execute("INSERT INTO customers VALUES (1,'Karim','Alami','karim@example.test')");
             s.execute("CREATE TABLE users(id BIGINT AUTO_INCREMENT PRIMARY KEY,username VARCHAR(60) UNIQUE NOT NULL,password_hash VARCHAR(255) NOT NULL,role VARCHAR(20) NOT NULL,status VARCHAR(20) NOT NULL,failed_attempts INT NOT NULL DEFAULT 0,customer_id BIGINT NULL)");
             AuthSchema.migrate(c);AuthSchema.migrate(c);
             try(PreparedStatement p=c.prepareStatement("INSERT INTO users(id,username,password_hash,role,status,customer_id) VALUES (1,'karim',?,'CUSTOMER','ACTIVE',1)")) {p.setString(1,HASH);p.executeUpdate();}
@@ -173,6 +173,26 @@ class AuthServiceTest {
     @Test void deliveryFailureRollsBackResetRequest() throws Exception {
         AuthService unavailable=new AuthService(this::open,HASHER,clock,(id,code)->{throw new java.io.IOException("simulated");});
         assertEquals(503,failure(()->unavailable.requestReset("karim")).status());assertEquals(0,count("password_resets"));
+    }
+    @Test void recoveryRecipientComesOnlyFromStoredCustomerAddress() throws Exception {
+        var recipient=new AtomicReference<RecoveryDelivery.Recipient>();
+        var email=new AuthService(this::open,HASHER,clock,(to,code)->recipient.set(to));
+        email.requestReset("karim");
+        assertEquals(1,recipient.get().userId());assertEquals("karim@example.test",recipient.get().email());
+        assertFalse(new Gson().toJson(email.login("karim",PASSWORD)).contains("karim@example.test"));
+    }
+    @Test void missingOrInvalidEmailDoesNotCreateResetOrRevealAccount() throws Exception {
+        var smtp=new SmtpRecoveryDelivery(new SmtpRecoveryDelivery.Settings("127.0.0.1",1,null,null,"bank@example.test",SmtpRecoveryDelivery.Security.LOCAL_TEST));
+        var email=new AuthService(this::open,HASHER,clock,smtp);
+        sql("UPDATE customers SET email=NULL");email.requestReset("karim");assertEquals(0,count("password_resets"));
+        sql("UPDATE customers SET email='invalid'");email.requestReset("karim");assertEquals(0,count("password_resets"));
+        email.requestReset("absent");assertEquals(0,count("password_resets"));
+    }
+    @Test void failedRedeliveryPreservesPreviousCode() throws Exception {
+        service.requestReset("karim");String previous=delivered.get();clock.advance(Duration.ofSeconds(61));
+        var failing=new AuthService(this::open,HASHER,clock,(to,code)->{throw new java.io.IOException("simulated provider failure");});
+        assertEquals(503,failure(()->failing.requestReset("karim")).status());
+        service.resetPassword(previous,NEXT);assertNotNull(service.login("karim",NEXT));
     }
     @Test void httpRateLimitIsEnforced() throws Exception {
         try(AuthServer api=new AuthServer(service,0)) {

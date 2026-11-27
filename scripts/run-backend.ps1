@@ -2,9 +2,11 @@ param(
     [ValidateSet('serve','check','migrate','init-demo','test')][string]$Action = 'serve',
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$Libraries = $env:SMARTBANK_AUTH_LIBS,
-    [switch]$LocalRecovery
+    [switch]$LocalRecovery,
+    [switch]$EmailRecovery
 )
 $ErrorActionPreference = 'Stop'
+if ($LocalRecovery -and $EmailRecovery) { throw 'Choisir LocalRecovery ou EmailRecovery, pas les deux.' }
 if (-not $JavaHome -or -not (Test-Path -LiteralPath (Join-Path $JavaHome 'bin\javac.exe'))) {
     $jdk = Get-ChildItem (Join-Path $env:ProgramFiles 'Java') -Directory -ErrorAction SilentlyContinue |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'bin\javac.exe') } |
@@ -14,15 +16,17 @@ if (-not $JavaHome -or -not (Test-Path -LiteralPath (Join-Path $JavaHome 'bin\ja
 if (-not $JavaHome) { throw 'Un JDK 17 ou superieur est necessaire.' }
 $env:JAVA_HOME = $JavaHome
 $env:Path = (Join-Path $JavaHome 'bin') + ';' + $env:Path
-foreach ($name in @('SMARTBANK_DB_URL','SMARTBANK_DB_USER','SMARTBANK_DB_PASSWORD','SMARTBANK_DEMO_PASSWORD','SMARTBANK_RECOVERY_OUTBOX')) {
+foreach ($name in @('SMARTBANK_DB_URL','SMARTBANK_DB_USER','SMARTBANK_DB_PASSWORD','SMARTBANK_DEMO_PASSWORD','SMARTBANK_RECOVERY_OUTBOX','SMARTBANK_RECOVERY_MODE','SMARTBANK_SMTP_HOST','SMARTBANK_SMTP_PORT','SMARTBANK_SMTP_USER','SMARTBANK_SMTP_PASSWORD','SMARTBANK_SMTP_FROM','SMARTBANK_SMTP_SECURITY')) {
     if (-not [Environment]::GetEnvironmentVariable($name,'Process')) {
         $value = [Environment]::GetEnvironmentVariable($name,'User')
         if ($null -ne $value) { [Environment]::SetEnvironmentVariable($name,$value,'Process') }
     }
 }
 if ($LocalRecovery) {
+    $env:SMARTBANK_RECOVERY_MODE = 'local'
     $env:SMARTBANK_RECOVERY_OUTBOX = Join-Path $env:LOCALAPPDATA 'SmartBankingJ\recovery-outbox'
 }
+if ($EmailRecovery) { $env:SMARTBANK_RECOVERY_MODE = 'smtp' }
 if (-not $Libraries) {
     $candidate = Join-Path $env:LOCALAPPDATA 'SmartBankingJ\tools\auth-libs'
     if (Test-Path -LiteralPath $candidate) { $Libraries = $candidate }
@@ -32,6 +36,9 @@ try {
     if ($Libraries) {
         $jars = @(Get-ChildItem -LiteralPath $Libraries -Filter '*.jar' | ForEach-Object FullName)
         if ($jars.Count -eq 0) { throw 'Le dossier Libraries doit contenir les dependances annoncees dans pom.xml.' }
+        if (-not ($jars | Where-Object { [IO.Path]::GetFileName($_) -like 'jakarta.mail-*.jar' })) {
+            throw 'Dependance SMTP manquante dans Libraries : Jakarta Mail 2.0.5 (et Activation). Voir README ou utiliser Maven avec un dossier Libraries complet.'
+        }
         $classpath = $jars -join ';'
         $java = Join-Path $JavaHome 'bin\java.exe'
         $javac = Join-Path $JavaHome 'bin\javac.exe'

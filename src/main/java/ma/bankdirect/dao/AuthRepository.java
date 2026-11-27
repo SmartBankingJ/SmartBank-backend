@@ -8,7 +8,7 @@ import ma.bankdirect.auth.AuthIdentity;
 public final class AuthRepository {
     public record UserRow(long id, String username, String hash, String role, String status,
             int failures, Instant lockedUntil, boolean mustChange, Long customerId,
-            String firstName, String lastName) {
+            String firstName, String lastName, String email) {
         public AuthIdentity identity() {
             return new AuthIdentity(new AuthIdentity.PublicUser(id, username, role),
                     customerId == null ? null : new AuthIdentity.PublicCustomer(customerId, firstName, lastName), mustChange);
@@ -31,16 +31,16 @@ public final class AuthRepository {
     }
     private UserRow user(Connection c, ResultSet r) throws SQLException {
         long value = r.getLong("customer_id"); Long customer = r.wasNull() ? null : value;
-        String first = null, last = null;
+        String first = null, last = null, email = null;
         if (customer != null) {
-            try (PreparedStatement s = c.prepareStatement("SELECT first_name,last_name FROM customers WHERE id=?")) {
+            try (PreparedStatement s = c.prepareStatement("SELECT first_name,last_name,email FROM customers WHERE id=?")) {
                 s.setLong(1, customer);
-                try (ResultSet cr = s.executeQuery()) { if (cr.next()) { first = cr.getString(1); last = cr.getString(2); } }
+                try (ResultSet cr = s.executeQuery()) { if (cr.next()) { first = cr.getString(1); last = cr.getString(2); email = cr.getString(3); } }
             }
         }
         return new UserRow(r.getLong("id"), r.getString("username"), r.getString("password_hash"),
                 r.getString("role"), r.getString("status"), r.getInt("failed_attempts"),
-                instant(r, "locked_until"), r.getBoolean("must_change_password"), customer, first, last);
+                instant(r, "locked_until"), r.getBoolean("must_change_password"), customer, first, last, email);
     }
     public void failure(Connection c, long id, int attempts, Instant lockedUntil) throws SQLException {
         try (PreparedStatement s = c.prepareStatement("UPDATE users SET failed_attempts=?,locked_until=? WHERE id=?")) {
