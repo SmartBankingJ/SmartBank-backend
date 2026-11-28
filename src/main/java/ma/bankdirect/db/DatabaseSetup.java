@@ -19,7 +19,6 @@ public final class DatabaseSetup {
             }
             if(command.equals("--init-demo")) {
                 String password=AppConfig.get("demo.password");
-                AuthService.policy(password);
                 script(c,"/sql/schema.sql");
                 script(c,"/sql/seed.sql");
                 AuthSchema.migrate(c);
@@ -28,6 +27,7 @@ public final class DatabaseSetup {
                         System.out.println("Existing secured demo user preserved. Use password recovery to change its password.");return;
                     }
                 }
+                AuthService.policy(password);
                 String hash=new PasswordHasher().hash(password);
                 try(PreparedStatement s=c.prepareStatement("UPDATE users SET password_hash=?,must_change_password=TRUE,failed_attempts=0,locked_until=NULL WHERE username='karim'")) {
                     s.setString(1,hash);

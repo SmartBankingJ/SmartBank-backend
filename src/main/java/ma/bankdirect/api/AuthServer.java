@@ -13,6 +13,7 @@ import java.util.concurrent.*;
 import ma.bankdirect.auth.*;
 import ma.bankdirect.config.AppConfig;
 import ma.bankdirect.db.Database;
+import ma.bankdirect.dashboard.DashboardRepository;
 import ma.bankdirect.security.PasswordHasher;
 
 /** Local development API. Binding is deliberately restricted to loopback (no remote HTTP passwords). */
@@ -20,6 +21,7 @@ public final class AuthServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService executor=Executors.newFixedThreadPool(4);
     private final AuthService service;
+    private final DashboardRepository dashboard=new DashboardRepository(Database::getConnection);
     private final Gson gson=new GsonBuilder().setStrictness(Strictness.STRICT).create();
     private final Map<String,Window> limits=new LinkedHashMap<>();
     private record Window(long minute,int count) {}
@@ -46,6 +48,12 @@ public final class AuthServer implements AutoCloseable {
             switch(route) {
                 case "POST /auth/login" -> { JsonObject b=body(exchange);response=service.login(text(b,"username"),text(b,"password")); }
                 case "GET /auth/me" -> response=service.me(bearer(exchange));
+                case "GET /dashboard" -> {
+                    AuthIdentity identity=service.me(bearer(exchange));
+                    if(!"CUSTOMER".equals(identity.user().role()) || identity.customer()==null)
+                        throw new AuthFailure(403,"CUSTOMER_REQUIRED","Cette page est réservée aux clients.");
+                    response=dashboard.load(identity.customer().id());
+                }
                 case "POST /auth/logout" -> {service.logout(bearer(exchange));response=Map.of("message","Déconnexion effectuée.");}
                 case "POST /auth/change-password" -> {JsonObject b=body(exchange);response=service.changePassword(bearer(exchange),text(b,"currentPassword"),text(b,"newPassword"));}
                 case "POST /auth/forgot-password" -> {

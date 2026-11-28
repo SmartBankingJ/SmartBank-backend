@@ -1,6 +1,13 @@
 CREATE DATABASE IF NOT EXISTS bankdirect CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE bankdirect;
 
+CREATE TABLE IF NOT EXISTS advisors (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    full_name VARCHAR(120) NOT NULL,
+    phone VARCHAR(30),
+    email VARCHAR(120)
+);
+
 CREATE TABLE IF NOT EXISTS customers (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     first_name VARCHAR(80) NOT NULL,
@@ -48,6 +55,16 @@ CREATE TABLE IF NOT EXISTS transactions (
     status VARCHAR(20) NOT NULL,
     created_at DATETIME NOT NULL,
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    message VARCHAR(500) NOT NULL,
+    created_at DATETIME NOT NULL,
+    read_at DATETIME NULL,
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS beneficiaries (

@@ -58,10 +58,25 @@ try {
         } elseif ($Action -eq 'serve') { & $java -cp $runtime ma.bankdirect.api.AuthServer }
         else { & $java -cp $runtime ma.bankdirect.db.DatabaseSetup ("--" + $Action) }
     } else {
-        $maven = Get-Command mvn.cmd -ErrorAction Stop
-        if ($Action -eq 'test') { & $maven.Source test }
-        elseif ($Action -eq 'serve') { & $maven.Source compile exec:java }
-        else { & $maven.Source compile exec:java '-Dexec.mainClass=ma.bankdirect.db.DatabaseSetup' ("-Dexec.args=--" + $Action) }
+        $maven = Get-Command mvn.cmd -ErrorAction SilentlyContinue
+        $mavenCommand = if ($maven) { $maven.Source } else { $null }
+        if (-not $mavenCommand) {
+            $localToolsCandidates = @()
+            if ($env:LOCALAPPDATA) { $localToolsCandidates += Join-Path $env:LOCALAPPDATA 'SmartBankingJ\tools' }
+            if ($env:USERPROFILE) { $localToolsCandidates += Join-Path $env:USERPROFILE 'AppData\Local\SmartBankingJ\tools' }
+            foreach ($localTools in ($localToolsCandidates | Select-Object -Unique)) {
+                $localMaven = Get-ChildItem -LiteralPath $localTools -Directory -Filter 'apache-maven-*' -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending |
+                    ForEach-Object { Join-Path $_.FullName 'bin\mvn.cmd' } |
+                    Where-Object { Test-Path -LiteralPath $_ } |
+                    Select-Object -First 1
+                if ($localMaven) { $mavenCommand = $localMaven; break }
+            }
+        }
+        if (-not $mavenCommand) { throw 'Maven est introuvable. Installez-le ou ajoutez son dossier bin au PATH.' }
+        if ($Action -eq 'test') { & $mavenCommand test }
+        elseif ($Action -eq 'serve') { & $mavenCommand compile exec:java }
+        else { & $mavenCommand compile exec:java '-Dexec.mainClass=ma.bankdirect.db.DatabaseSetup' ("-Dexec.args=--" + $Action) }
     }
     if ($LASTEXITCODE -ne 0) { throw 'La commande backend a echoue.' }
 } finally { Pop-Location }
