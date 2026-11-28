@@ -88,12 +88,15 @@ Réponses JSON, erreurs `{ "code": "...", "message": "..." }`, en-tête `Cache-C
 | GET | `/health` | Disponibilité du processus, pas une vérification MySQL |
 | POST | `/auth/login` | `username`, `password` ; jeton et identité publique, avec `mustChangePassword` |
 | GET | `/auth/me` | Identité du porteur du jeton, sauf première connexion restreinte |
+| GET | `/dashboard` | Projection du tableau de bord du client connecté : comptes, trois opérations terminées, demandes en attente, notifications non lues et conseiller |
 | POST | `/auth/logout` | Révocation du jeton ; répétable sans erreur |
 | POST | `/auth/change-password` | `currentPassword`, `newPassword` ; nouveau jeton et révocation des anciennes sessions |
 | POST | `/auth/forgot-password` | `username` ; réponse neutre, y compris pour un utilisateur inconnu |
 | POST | `/auth/reset-password` | `code`, `newPassword` ; code consommé et toutes les sessions révoquées |
 
 Pour les routes authentifiées : `Authorization: Bearer <token>`. Les rôles viennent de la base et ne sont jamais choisis dans la demande de connexion. L’interface desktop actuelle est réservée au rôle CUSTOMER ; les interfaces ADMIN/ADVISOR ne sont pas encore développées.
+
+`GET /dashboard` n’accepte aucun identifiant client fourni par le desktop : le client est dérivé de la session bearer validée. Les demandes en attente sont comptées depuis les transactions `PENDING`. Les notifications utilisent la table `notifications`; le conseiller provient de la relation `customers.advisor_id` vers `advisors`. L’action `migrate` crée ces tables sans effacer les données existantes.
 
 ## Règles de sécurité et limites
 
